@@ -57,7 +57,7 @@ def create_dataframe(filepath: str, classes: list):
     df = pd.DataFrame(audio_list)
     df.set_index('fname', inplace=True)
     # Add a column of length of the audio
-    for f in df.index:
+    for f in tqdm(df.index):
         signal, sr = lb.core.load(filepath+f, sr = None)
         df.at[f, 'length'] = signal.shape[0]/sr
     return df
@@ -75,13 +75,15 @@ def build_features(n_samples: int, prob_dist, df, filepath: str, config, class_d
         rand_class = np.random.choice(class_dist.index, p=prob_dist)
         audio_file = np.random.choice(df[df.instrument==rand_class].index)
         audio_data, sr = lb.core.load(filepath+audio_file, sr = None)
-        rand_idx = np.random.randint(0, audio_data.shape[0]-config.step) # Therefore when taking the "sample", we don't run out of data
-        sample = audio_data[rand_idx:rand_idx+config.step] # Take 1/10 of a second of the audio file
-        X_sample = mfcc(sample, sr, numcep=config.nfeat, nfilt=config.nfilt, nfft=config.nfft)
-        _min = min(np.amin(X_sample), _min)
-        _max = max(np.amax(X_sample), _max)
-        X.append(X_sample)
-        y.append(classes.index(rand_class))
+        if audio_data.shape[0] >= config.step:
+            rand_idx = np.random.randint(0, audio_data.shape[0]-config.step) # Therefore when taking the "sample", we don't run out of data
+            sample = audio_data[rand_idx:rand_idx+config.step] # Take 1/10 of a second of the audio file
+            #X_sample = mfcc(sample, sr, numcep=config.nfeat, nfilt=config.nfilt, nfft=config.nfft)
+            X_sample = lb.feature.mfcc(y=sample, sr=sr, n_fft=config.nfft, n_mfcc=config.nfeat, n_mels=config.nfilt)
+            _min = min(np.amin(X_sample), _min)
+            _max = max(np.amax(X_sample), _max)
+            X.append(X_sample)
+            y.append(classes.index(rand_class))
     X, y = np.array(X), np.array(y)
     
     # Normalize the X
@@ -129,7 +131,8 @@ def build_prediction(audio_dir, classes: list, config, model, _min, _max):
         
         for i in range(0, audio_data.shape[0]-config.step, config.step):
             sample = audio_data[i:i+config.step]
-            x = mfcc(sample, sr, numcep=config.nfeat, nfilt=config.nfilt, nfft=config.nfft)
+            #x = mfcc(sample, sr, numcep=config.nfeat, nfilt=config.nfilt, nfft=config.nfft)
+            x = lb.feature.mfcc(y=sample, sr=sr, n_fft=config.nfft, n_mfcc=config.nfeat, n_mels=config.nfilt)
             x = (x - _min)/ (_max - _min)
             
             if config.mode == 'conv':
@@ -154,20 +157,41 @@ train_filenames = os.listdir(train_datapath)
 classes = list(np.unique([filename.split('_')[0] for filename in train_filenames]))
 
 # Create a training dataFrame
-train_df = create_dataframe(filepath = train_datapath, classes = classes)
-valid_df = create_dataframe(filepath = valid_datapath, classes = classes)
+#train_df = create_dataframe(filepath = train_datapath, classes = classes)
+#valid_df = create_dataframe(filepath = valid_datapath, classes = classes)
+#
+## The dataframe is saved into csv file
+#train_df.to_csv('train.csv', index=False)
+#valid_df.to_csv('valid.csv', index=False)
+
+# Load csv file
+train_df = pd.read_csv('train.csv')
+train_df.set_index('fname', inplace=True)
+valid_df = pd.read_csv('valid.csv')
+valid_df.set_index('fname', inplace=True)
 
 # Some param for train and valid respectively
 train_class_dist, train_prob_dist = create_dist(train_df)
-train_n_samples = 2 * int(train_df['length'].sum()/0.1)
+train_n_samples = int(train_df['length'].sum()/3)
 
 valid_class_dist, valid_prob_dist = create_dist(valid_df)
-valid_n_samples = 2 * int(valid_df['length'].sum()/0.1)
+valid_n_samples = int(valid_df['length'].sum()/0.1)
 
 config = Config(mode='conv')
 
 if config.mode == 'conv':
     X_train, y_train, train_min, train_max = build_features(train_n_samples, train_prob_dist, train_df, train_datapath, config, train_class_dist, classes)
+    # Save the X_train and y_train because it takes a lot of times to run this again
+    np.save('X_train.npy', X_train)
+    np.save('y_train.npy', y_train)
+    np.save('train_min.npy', train_min)
+    np.save('train_max.npy', train_max)
+    # Load them again to run the model
+#    X_train = np.load('X_train.npy')
+#    y_train = np.load('y_train.npy')
+#    train_max = np.load('train_max.npy')
+#    train_min = np.load('train_min.npy')
+    
     X_valid, y_valid, _, _ = build_features(valid_n_samples, valid_prob_dist, valid_df, valid_datapath, config, valid_class_dist, classes)
     y_flat = np.argmax(y_train, axis=1)
     input_shape = (X_train.shape[1], X_train.shape[2], 1)
@@ -178,16 +202,25 @@ class_weight = compute_class_weight('balanced', np.unique(y_flat), y_flat)
 mcp = tf.keras.callbacks.ModelCheckpoint("my_model.h5", monitor="val_accuracy",
                       save_best_only=True, save_weights_only=True)
 
-es = tf.keras.callbacks.EarlyStopping(monitor='val_loss')
+es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience = 8)
 
-model.fit(X_train, y_train, epochs=10, batch_size=32, shuffle=True, validation_data=(X_valid, y_valid), class_weight=class_weight, verbose=1, callbacks=[mcp, es])
+reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.45,
+                              patience=2, min_lr=0.000001, verbose=1)
+
+#model.fit(X_train, y_train, epochs=32, batch_size=32, shuffle=True, validation_data=(X_valid, y_valid), class_weight=class_weight, verbose=1, callbacks=[mcp, es, reduce_lr])
+model.fit(X_train, y_train, epochs=32, batch_size=32, shuffle=True, validation_split=0.2, class_weight=class_weight, verbose=1, callbacks=[mcp, es, reduce_lr])
 
 # Make predictions
 y_true, y_pred, fn_prob = build_prediction(audio_dir=test_datapath, classes = classes, config=config, model = model, _min = train_min, _max = train_max)
 acc_score = accuracy_score(y_true = y_true, y_pred=y_pred)
 print("The accuracy score for the task is: {}".format(acc_score))
 
-
-
-
-
+# Create a data frame for the test values
+dict_list = []
+for f, probs in fn_prob.items():
+    value_dict = {'fname':f, 'true_class':f.split('_')[0], 'pred_class':classes[np.argmax(probs)]}
+    dict_list.append(value_dict)
+test_df = pd.DataFrame(dict_list)
+test_df.set_index('fname', inplace=True)
+# Extract to csv file
+test_df.to_csv('test_df.csv', index=False)

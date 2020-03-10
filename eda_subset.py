@@ -41,8 +41,8 @@ def graph_plot(signal, title: str, show_img: bool = True):
 def main():
 
     # File paths define
-    folder_train = './wavfile_train/'
-    clean_train = './clean_train/'
+    folder_train = './wavfile_valid/'
+    clean_train = './clean_valid/'
     # Create a list of filenames
     filenames = os.listdir(folder_train)
     # Class list

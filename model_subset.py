@@ -37,7 +37,8 @@ def build_features():
         label = train_df.at[file, 'instrument']
         rand_idx = np.random.randint(0, audio_data.shape[0]-config.step)
         sample = audio_data[rand_idx:rand_idx+config.step]
-        X_sample = mfcc(sample, sr, numcep=config.nfeat, nfilt=config.nfilt, nfft=config.nfft)
+        #X_sample = mfcc(sample, sr, numcep=config.nfeat, nfilt=config.nfilt, nfft=config.nfft)
+        X_sample = lb.feature.mfcc(y=sample, sr=sr, n_fft=config.nfft, n_mfcc=config.nfeat, n_mels=config.nfilt)
         _min = min(np.amin(X_sample), _min)
         _max = max(np.amax(X_sample), _max)
         X.append(X_sample)
@@ -109,7 +110,7 @@ class_weight = compute_class_weight('balanced', np.unique(y_flat), y_flat)
 mcp = tf.keras.callbacks.ModelCheckpoint("my_model.h5", monitor="val_accuracy",
                       save_best_only=True, save_weights_only=True)
 
-es = tf.keras.callbacks.EarlyStopping(monitor='val_loss')
+es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience = 3)
 
 model.fit(X_train, y_train, epochs=10, batch_size=32, validation_split=0.2, shuffle=True, class_weight=class_weight, verbose=1, callbacks=[mcp, es])
 
